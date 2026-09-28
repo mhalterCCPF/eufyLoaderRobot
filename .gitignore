@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+
+.pio/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+*.log
+/scripts/logs/*.csv
