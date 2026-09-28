@@ -1,0 +1,17 @@
+name: 'EufyRobot home switches held'
+version: 1
+author: 'EufyRobot'
+steps:
+  - set-control:
+      part-id: limit_pm_home
+      control: pressed
+      value: 1
+  - set-control:
+      part-id: limit_lm_home
+      control: pressed
+      value: 1
+  - set-control:
+      part-id: limit_rm_home
+      control: pressed
+      value: 1
+  - delay: 590000ms

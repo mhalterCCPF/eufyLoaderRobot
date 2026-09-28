@@ -1,0 +1,2 @@
+cycle,shelf,start_iso,actual_sec,expected_sec,delta_sec,delta_pct,flag
+1,1,2026-09-27T20:25:39,101.531,98.300,3.231,+3.3%,OK

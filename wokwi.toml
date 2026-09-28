@@ -1,0 +1,5 @@
+[wokwi]
+version = 1
+elf     = "firmware/.pio/build/wokwi-test/firmware.elf"
+firmware = "firmware/.pio/build/wokwi-test/firmware-merged.bin"
+rfc2217ServerPort = 4000
