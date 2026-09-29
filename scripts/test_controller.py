@@ -129,6 +129,12 @@ class ControllerTests(unittest.TestCase):
         )
         self.assertEqual(self.sleeps, [controller.T1_SEC, controller.PRINT_PLACEHOLDER_SEC])
 
+    def test_before_print_callback_runs_after_push_and_before_retrieval(self):
+        callback_calls = []
+        self.runner.run_cycle(1, before_print=lambda: callback_calls.append(len(self.motion.calls)))
+        self.assertEqual(callback_calls, [8])
+        self.assertEqual(self.motion.calls[8], ("MOVE", "RM", controller.RM_D1, controller.RS1))
+
     def test_failed_cycle_restores_idle_state(self):
         self.runner.motion = FakeMotion(fail_on_call=3)
         with self.assertRaises(RuntimeError):

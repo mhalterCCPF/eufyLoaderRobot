@@ -16,6 +16,10 @@ from controller import (
     FirmwareLink,
     ShelfSettings,
 )
+from order_automation_client import OrderAutomationClient
+from order_workflow import RobotOrderCoordinator
+from robot_config import load_robot_config
+from settings_dialog import SettingsDialog
 
 
 COLORS = {
@@ -37,16 +41,19 @@ class EufyDashboard(tk.Tk):
     def __init__(self, endpoint: Optional[str] = None) -> None:
         super().__init__()
         self.title("EufyRobot | Motion Instrument")
-        self.geometry("1180x760")
-        self.minsize(980, 680)
+        self.geometry("1180x820")
+        self.minsize(980, 720)
         self.configure(bg=COLORS["background"])
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.settings = ShelfSettings()
         self.link = FirmwareLink(endpoint=endpoint)
         self.runner = CycleRunner(self.link, self.settings, on_progress=self._post_progress)
+        self.robot_config = load_robot_config()
         self._worker_active = False
         self._pauseable_operation = False
+        self._waiting_for_shelf = False
+        self._shelf_wait_event = threading.Event()
         self._closing = False
         self.endpoint_var = tk.StringVar(value=endpoint or self.link.endpoint or "")
         self.mode_var = tk.StringVar(value=self._mode_text())
@@ -147,22 +154,26 @@ class EufyDashboard(tk.Tk):
         actions.grid(row=2, column=0, sticky="ew", padx=16)
         actions.grid_columnconfigure(0, weight=1)
         actions.grid_columnconfigure(1, weight=1)
-        self.run_single_button = self._button(actions, "RUN SINGLE", self._run_single, COLORS["accent"])
-        self.run_all_button = self._button(actions, "RUN ALL", self._run_all, COLORS["ready"])
+        self.run_cycle_button = self._button(actions, "RUN CYCLE", self._run_cycle, COLORS["accent"])
+        self.run_next_button = self._button(actions, "RUN NEXT", self._run_next, COLORS["ready"])
+        self.run_batch_button = self._button(actions, "RUN BATCH", self._run_batch, COLORS["blue"])
+        self.run_continuous_button = self._button(actions, "RUN CONTINUOUS", self._run_continuous, COLORS["ready"])
         self.pause_button = self._button(actions, "PAUSE AFTER CYCLE", self._pause, COLORS["panel_alt"])
         self.stop_button = self._button(actions, "PAUSE IMMEDIATELY", self._immediate_stop, COLORS["danger"])
         self.home_button = self._button(actions, "HOME", self._home, COLORS["blue"])
-        self.run_single_button.grid(row=0, column=0, sticky="ew", padx=(0, 5), pady=4)
-        self.run_all_button.grid(row=0, column=1, sticky="ew", padx=(5, 0), pady=4)
-        self.pause_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=4)
-        self.stop_button.grid(row=2, column=0, sticky="ew", padx=(0, 5), pady=4)
-        self.home_button.grid(row=2, column=1, sticky="ew", padx=(5, 0), pady=4)
+        self.run_cycle_button.grid(row=0, column=0, sticky="ew", padx=(0, 5), pady=4)
+        self.run_next_button.grid(row=0, column=1, sticky="ew", padx=(5, 0), pady=4)
+        self.run_batch_button.grid(row=1, column=0, sticky="ew", padx=(0, 5), pady=4)
+        self.run_continuous_button.grid(row=1, column=1, sticky="ew", padx=(5, 0), pady=4)
+        self.pause_button.grid(row=2, column=0, columnspan=2, sticky="ew", pady=4)
+        self.stop_button.grid(row=3, column=0, sticky="ew", padx=(0, 5), pady=4)
+        self.home_button.grid(row=3, column=1, sticky="ew", padx=(5, 0), pady=4)
 
         tk.Label(actions, text="CURRENT OPERATION", bg=COLORS["panel"], fg=COLORS["muted"],
-                 font=("Bahnschrift", 9)).grid(row=3, column=0, columnspan=2, sticky="w", pady=(15, 3))
+                 font=("Bahnschrift", 9)).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 3))
         tk.Label(actions, textvariable=self.operation_var, bg=COLORS["panel_alt"], fg=COLORS["text"],
                  anchor="w", padx=10, pady=10, font=("Consolas", 10)).grid(
-                     row=4, column=0, columnspan=2, sticky="ew")
+                     row=5, column=0, columnspan=2, sticky="ew")
 
         config_frame = tk.Frame(control_panel, bg=COLORS["panel"])
         config_frame.grid(row=3, column=0, sticky="ew", padx=16, pady=(15, 12))
@@ -171,6 +182,8 @@ class EufyDashboard(tk.Tk):
         self.configure_single_button = self._button(config_frame, "CONFIGURE SINGLE SHELF", self._configure_single, COLORS["panel_alt"])
         self.configure_all_button.grid(row=0, column=0, sticky="ew", pady=3)
         self.configure_single_button.grid(row=1, column=0, sticky="ew", pady=3)
+        self.settings_button = self._button(config_frame, "SETTINGS", self._open_settings, COLORS["panel_alt"])
+        self.settings_button.grid(row=2, column=0, sticky="ew", pady=3)
 
         log_panel = tk.Frame(self, bg=COLORS["panel"], padx=14, pady=10)
         log_panel.grid(row=3, column=0, sticky="nsew", padx=22, pady=(14, 18))
@@ -229,7 +242,7 @@ class EufyDashboard(tk.Tk):
                 text=f"SHELF {index + 1:02d}\n{state}",
                 bg=COLORS["ready"] if ready else COLORS["empty"],
                 fg=COLORS["text"],
-                state="disabled" if self._worker_active else "normal",
+                state="disabled" if self._worker_active and not self._waiting_for_shelf else "normal",
             )
         self.ready_count_var.set(f"{sum(self.runner.substrate_ready)} READY")
 
@@ -242,19 +255,24 @@ class EufyDashboard(tk.Tk):
         self.cycle_var.set(str(self.runner.completed_cycles))
         self.connect_button.configure(state="disabled" if busy else "normal")
         self.connect_button.configure(text="DISCONNECT" if connected else "CONNECT")
-        self.run_single_button.configure(state="normal" if connected and self.link.homed and not busy else "disabled")
-        self.run_all_button.configure(state="normal" if connected and self.link.homed and not busy and any(self.runner.substrate_ready) else "disabled")
+        can_run = connected and self.link.homed and not busy
+        self.run_cycle_button.configure(state="normal" if can_run and any(self.runner.substrate_ready) else "disabled")
+        self.run_next_button.configure(state="normal" if can_run else "disabled")
+        self.run_batch_button.configure(state="normal" if can_run else "disabled")
+        self.run_continuous_button.configure(state="normal" if can_run else "disabled")
         self.pause_button.configure(state="normal" if busy and self._pauseable_operation else "disabled")
         self.stop_button.configure(state="normal" if connected else "disabled")
         self.home_button.configure(state="normal" if connected and not busy else "disabled")
         self.configure_all_button.configure(state="normal" if not busy else "disabled")
         self.configure_single_button.configure(state="normal" if not busy else "disabled")
+        self.settings_button.configure(state="normal" if not busy else "disabled")
         self._refresh_shelves()
 
     def _toggle_ready(self, index: int) -> None:
-        if self._worker_active:
+        if self._worker_active and not self._waiting_for_shelf:
             return
         self.runner.substrate_ready[index] = not self.runner.substrate_ready[index]
+        self._shelf_wait_event.set()
         self._refresh_controls()
 
     def _connect(self) -> None:
@@ -268,16 +286,74 @@ class EufyDashboard(tk.Tk):
         self.link.endpoint = endpoint
         self._launch_worker("Connecting", self.link.connect, require_connected=False)
 
-    def _run_single(self) -> None:
+    def _run_cycle(self) -> None:
         self.runner.pause_requested.clear()
-        self._launch_worker("Running one cycle", self.runner.run_one, require_homed=True, pauseable=True)
+        self._launch_worker("Running one cycle", self._run_one_cycle, require_homed=True, pauseable=True)
 
-    def _run_all(self) -> None:
+    def _run_one_cycle(self) -> int:
+        position = self.runner.run_one()
+        if position is None:
+            raise RuntimeError("Mark at least one shelf ready before running a cycle.")
+        return position
+
+    def _order_coordinator(self) -> RobotOrderCoordinator:
+        client = OrderAutomationClient(
+            repository_path=self.robot_config["orderautomation_path"],
+            python_path=self.robot_config.get("orderautomation_python", ""),
+            runtime_config=self.robot_config,
+        )
+        return RobotOrderCoordinator(
+            self.runner,
+            client,
+            self.robot_config["eufymake_dir"],
+            wait_for_ready=self._wait_for_ready_shelf,
+        )
+
+    def _run_next(self) -> None:
         self.runner.pause_requested.clear()
-        self._launch_worker("Running all ready shelves", self.runner.run_all, require_homed=True, pauseable=True)
+        self._launch_worker("Processing next order", self._order_coordinator().run_next_order,
+                            require_homed=True, pauseable=True)
+
+    def _run_batch(self) -> None:
+        order_count = simpledialog.askinteger(
+            "Run Batch", "Number of orders:", minvalue=1, parent=self,
+        )
+        if order_count is None:
+            return
+        self.runner.pause_requested.clear()
+        operation = lambda: self._order_coordinator().run_batch(order_count)
+        self._launch_worker("Processing order batch", operation, require_homed=True, pauseable=True)
+
+    def _run_continuous(self) -> None:
+        self.runner.pause_requested.clear()
+        self._launch_worker("Processing orders continuously", self._order_coordinator().run_continuous,
+                            require_homed=True, pauseable=True)
+
+    def _wait_for_ready_shelf(self) -> None:
+        self._waiting_for_shelf = True
+        self._post_progress("Waiting for a ready shelf")
+        self._shelf_wait_event.clear()
+        while not any(self.runner.substrate_ready):
+            if self.runner.pause_requested.is_set():
+                break
+            if self.runner.immediate_stop_requested.is_set() or self._closing:
+                self._waiting_for_shelf = False
+                raise RuntimeError("Run stopped; Home is required after an immediate stop.")
+            self._shelf_wait_event.wait(0.25)
+            self._shelf_wait_event.clear()
+        self._waiting_for_shelf = False
+        self.after(0, self._refresh_controls)
+
+    def _open_settings(self) -> None:
+        SettingsDialog(self, self._settings_saved)
+
+    def _settings_saved(self) -> None:
+        self.robot_config = load_robot_config()
+        self._write_log("Settings saved.")
 
     def _pause(self) -> None:
         self.runner.request_pause()
+        self._shelf_wait_event.set()
         self.operation_var.set("Pause requested; finishing current cycle")
         self._write_log("Pause requested; no new cycle will start after the active cycle.")
 
@@ -285,6 +361,7 @@ class EufyDashboard(tk.Tk):
         if not self.link.connected:
             return
         self.runner.immediate_stop_requested.set()
+        self._shelf_wait_event.set()
         self.operation_var.set("Immediate stop sent; Home required")
         self._write_log("Immediate stop requested. Axis positions are no longer trusted.")
         threading.Thread(target=self._send_stop, name="immediate-stop", daemon=True).start()
@@ -319,15 +396,18 @@ class EufyDashboard(tk.Tk):
             try:
                 result = operation()
             except Exception as exc:
-                self.after(0, lambda message=str(exc): self._worker_finished(label, message))
+                if not self._closing:
+                    self.after(0, lambda message=str(exc): self._worker_finished(label, message))
             else:
-                self.after(0, lambda value=result: self._worker_finished(label, None, value))
+                if not self._closing:
+                    self.after(0, lambda value=result: self._worker_finished(label, None, value))
 
         threading.Thread(target=worker, name="robot-operation", daemon=True).start()
 
     def _worker_finished(self, label: str, error: Optional[str], result=None) -> None:
         self._worker_active = False
         self._pauseable_operation = False
+        self._waiting_for_shelf = False
         if error:
             self.operation_var.set("Fault: Home required" if self.runner.immediate_stop_requested.is_set() else "Operation failed")
             self._write_log(f"{label} failed: {error}")
@@ -335,7 +415,25 @@ class EufyDashboard(tk.Tk):
                 messagebox.showerror("Connection failed", error, parent=self)
         else:
             self.operation_var.set("Standby" if result is None else "Run complete")
-            if isinstance(result, list):
+            if isinstance(result, dict):
+                status = result.get("status")
+                if status == "no_orders":
+                    completed_orders = result.get("completed_orders")
+                    if completed_orders is None:
+                        self._write_log("No unprinted orders found.")
+                    else:
+                        self._write_log(
+                            f"Order queue empty after {completed_orders} completed order(s)."
+                        )
+                elif status == "paused":
+                    self._write_log("Paused at a print boundary; the prepared order can be resumed.")
+                elif "completed_orders" in result:
+                    self._write_log(f"Batch complete: {result['completed_orders']} order(s), status={status}.")
+                elif status == "completed":
+                    self._write_log(f"Order #{result.get('order_name', '')} completed.")
+                else:
+                    self._write_log(f"{label} complete: {status or 'done'}.")
+            elif isinstance(result, list):
                 self._write_log(f"Run complete: {len(result)} shelf(s) processed.")
             elif isinstance(result, int):
                 self._write_log(f"Shelf {result} cycle complete.")
@@ -428,6 +526,7 @@ class EufyDashboard(tk.Tk):
 
     def _on_close(self) -> None:
         self._closing = True
+        self._shelf_wait_event.set()
         if self._worker_active and self.link.connected:
             self.runner.immediate_stop_requested.set()
             try:

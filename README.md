@@ -7,6 +7,9 @@ EufyRobot coordinates three stepper axes and a retrieve-gate servo using an ESP3
 - `firmware/`: PlatformIO ESP32-S3 firmware
 - `scripts/controller.py`: motion protocol, cycle sequencing, shelf state, and configuration constants
 - `scripts/dashboard.py`: Tkinter instrument dashboard
+- `scripts/order_automation_client.py`: subprocess client for OrderAutomation's headless CLI
+- `scripts/order_workflow.py`: order, batch, and continuous cycle coordination
+- `scripts/robot_config.py` and `scripts/settings_dialog.py`: robot-owned integration settings
 - `scripts/master_control.py`: dashboard launch entry point, also dispatches `--headless` mode
 - `scripts/headless.py`: connect/home/run-all without the GUI, with per-cycle timing logged to CSV
 - `scripts/expected_timing.py`: analytical cycle/home duration model used to evaluate logged timing
@@ -141,8 +144,11 @@ Each cycle's actual duration is compared against an expected duration computed f
 ## Dashboard Controls
 
 - Shelf buttons toggle each shelf between ready and not-ready.
-- **Run Single** processes the nearest ready shelf.
-- **Run All** continues while shelves are ready.
+- **Run Cycle** runs one nearest-ready-shelf cycle without contacting OrderAutomation.
+- **Run Next** obtains or resumes one Shopify order and runs one robot cycle per line-item quantity.
+- **Run Batch** processes the requested number of Shopify orders; the count is orders, not print units.
+- **Run Continuous** processes orders until OrderAutomation reports that no orders remain.
+- **Settings** configures OrderAutomation's repository path, optional Python interpreter, non-secret runtime options, and output directories.
 - **Pause After Cycle** finishes the current cycle and then stops scheduling cycles.
 - **Pause Immediately** halts step pulses; axis positions become untrusted and Home is required before motion resumes.
 - **Home** homes PM, LM, and RM sequentially.
@@ -151,7 +157,9 @@ Each cycle's actual duration is compared against an expected duration computed f
 
 Offset controls adjust by 1 mm. Next advances to the next shelf; Save & Exit commits the edits. Cancel discards changes made in the open editor.
 
-After each tenth successfully completed cycle, all axes home before another cycle starts. Run All can be paused at the cycle boundary.
+After each tenth successfully completed cycle, all axes home before another cycle starts. Order runs can be paused at a cycle boundary. If an order has more print units than ready shelves, the dashboard waits between cycles; load a shelf and toggle it ready to continue.
+
+OrderAutomation remains a separate repository and desktop application. The robot uses its headless JSON CLI as a subprocess, defaults to the sibling `../OrderAutomation` checkout when available, and prefers that repository's `.venv` Python. Use Settings to select a different checkout or interpreter. The robot saves non-secret settings in its ignored root `config.json`; Shopify and GCP credentials remain only in OrderAutomation's `keys/` directory. A prepared order is persisted and resumed after interruption; each physical cycle is acknowledged separately, and cleanup is deferred until every unit completes. The `print_mailing_label` option is forwarded, but label generation is not implemented yet.
 
 ## Cycle Sequence
 

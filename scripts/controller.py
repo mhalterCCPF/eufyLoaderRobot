@@ -294,7 +294,7 @@ class CycleRunner:
         finally:
             self.motion.set_operation_state("IDLE")
 
-    def run_cycle(self, shelf_position: int) -> None:
+    def run_cycle(self, shelf_position: int, before_print: Optional[Callable[[], None]] = None) -> None:
         if not 1 <= shelf_position <= N_SHELVES:
             raise ValueError(f"Shelf position must be from 1 to {N_SHELVES}")
         shelf_lift_position = lmp(shelf_position, self.settings.offsets_mm)
@@ -309,7 +309,12 @@ class CycleRunner:
             self._run_step("Settling", lambda: self.sleep(T1_SEC))
             self._run_step("PM initial retract", lambda: move("PM", PM_D2, PS2))
             self._run_step("PM retract", lambda: move("PM", OFFSET_HOME, PS1))
-            self._run_step("Print placeholder", lambda: self.sleep(PRINT_PLACEHOLDER_SEC))
+            def print_step() -> None:
+                if before_print:
+                    before_print()
+                self.sleep(PRINT_PLACEHOLDER_SEC)
+
+            self._run_step("Print placeholder", print_step)
             self._run_step("RM first retrieve", lambda: move("RM", RM_D1, RS1))
             self._run_step("Close retrieve gate", lambda: self.motion.set_gate(GATE_CLOSED_DEG))
             self._run_step("LM retrieve clearance", lambda: move("LM", shelf_lift_position - O2, LS2))
@@ -339,11 +344,11 @@ class CycleRunner:
 
         self._run_indicated("HOME", home_steps)
 
-    def run_one(self) -> Optional[int]:
+    def run_one(self, before_print: Optional[Callable[[], None]] = None) -> Optional[int]:
         shelf_position = get_next_position(self.current_position, self.substrate_ready)
         if shelf_position is None:
             return None
-        self.run_cycle(shelf_position)
+        self.run_cycle(shelf_position, before_print=before_print)
         self.substrate_ready[shelf_position - 1] = False
         self.current_position = shelf_position
         self.completed_cycles += 1
