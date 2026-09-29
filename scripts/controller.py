@@ -12,6 +12,7 @@ from typing import Callable, Optional, Protocol
 # Configuration constants
 USE_REAL_COMPONENTS = False
 VIRTUAL_SERIAL_URL = "rfc2217://localhost:4000"
+TEST_MODE_DISTANCE_SCALE = 0.1
 BAUD_RATE = 115_200
 READ_TIMEOUT_SEC = 0.25
 COMMAND_TIMEOUT_SEC = 45.0
@@ -123,8 +124,10 @@ def find_real_serial_port() -> Optional[str]:
 class FirmwareLink:
     """Serialized request/reply client for the firmware motion protocol."""
 
-    def __init__(self, endpoint: Optional[str] = None, serial_factory=None) -> None:
+    def __init__(self, endpoint: Optional[str] = None, serial_factory=None, test_mode: bool = False) -> None:
         self.endpoint = endpoint or (find_real_serial_port() if USE_REAL_COMPONENTS else VIRTUAL_SERIAL_URL)
+        self.test_mode = test_mode
+        self._validate_test_endpoint()
         self.serial_factory = serial_factory
         self.connection = None
         self.connected = False
@@ -139,6 +142,7 @@ class FirmwareLink:
         return self.homed_axes == set(AXES)
 
     def connect(self) -> None:
+        self._validate_test_endpoint()
         if not self.endpoint:
             raise RuntimeError("No real serial port found; provide a port explicitly")
         serial_factory = self.serial_factory
@@ -155,6 +159,17 @@ class FirmwareLink:
         self._stop_reader.clear()
         self._reader = threading.Thread(target=self._read_loop, name="firmware-rx", daemon=True)
         self._reader.start()
+
+    def _validate_test_endpoint(self) -> None:
+        if self.test_mode and self.endpoint != VIRTUAL_SERIAL_URL:
+            raise ValueError(
+                f"Test mode is restricted to the local Wokwi endpoint {VIRTUAL_SERIAL_URL}."
+            )
+
+    def _distance_to_steps(self, distance_mm: float) -> int:
+        if self.test_mode:
+            distance_mm *= TEST_MODE_DISTANCE_SCALE
+        return mm_to_steps(distance_mm)
 
     def disconnect(self) -> None:
         self.connected = False
@@ -215,7 +230,7 @@ class FirmwareLink:
         if speed_mm_per_second <= 0:
             raise ValueError("Speed must be greater than zero")
         self._send(
-            f"MOVE {axis} {mm_to_steps(target_mm)} {mm_per_second_to_steps_per_second(speed_mm_per_second):.3f}",
+            f"MOVE {axis} {self._distance_to_steps(target_mm)} {mm_per_second_to_steps_per_second(speed_mm_per_second):.3f}",
             f"DONE: MOVE {axis}",
         )
 
@@ -224,7 +239,7 @@ class FirmwareLink:
         if speed_mm_per_second <= 0:
             raise ValueError("Speed must be greater than zero")
         self._send(
-            f"HOME_APPROACH {axis} {mm_to_steps(target_mm)} {mm_per_second_to_steps_per_second(speed_mm_per_second):.3f}",
+            f"HOME_APPROACH {axis} {self._distance_to_steps(target_mm)} {mm_per_second_to_steps_per_second(speed_mm_per_second):.3f}",
             f"DONE: HOME_APPROACH {axis}",
         )
 
@@ -233,7 +248,7 @@ class FirmwareLink:
         if seek_speed_mm_per_second <= 0 or safeguard_mm >= 0:
             raise ValueError("Homing needs a positive speed and negative safeguard")
         self._send(
-            f"HOME {axis} {mm_per_second_to_steps_per_second(seek_speed_mm_per_second):.3f} {mm_to_steps(safeguard_mm)}",
+            f"HOME {axis} {mm_per_second_to_steps_per_second(seek_speed_mm_per_second):.3f} {self._distance_to_steps(safeguard_mm)}",
             f"DONE: HOME {axis}",
         )
         self.homed_axes.add(axis)

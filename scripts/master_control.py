@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from controller import N_SHELVES
+from controller import N_SHELVES, VIRTUAL_SERIAL_URL
 from dashboard import EufyDashboard
 from headless import run_headless
 
@@ -22,6 +22,7 @@ def _parse_ready(value: str) -> list:
 def main() -> None:
     parser = argparse.ArgumentParser(description="EufyRobot three-axis dashboard")
     parser.add_argument("--port", help="serial URL or COM port; defaults from USE_REAL_COMPONENTS")
+    parser.add_argument("--test-mode", action="store_true", help="Wokwi-only mode with 10x shorter linear travel")
     parser.add_argument("--headless", action="store_true", help="run connect/home/run-all without the GUI")
     parser.add_argument("--ready", default="all", type=_parse_ready,
                          help="comma-separated 1-based shelf numbers to mark ready, or 'all' (default: all)")
@@ -31,11 +32,16 @@ def main() -> None:
                          help="fraction deviation from expected cycle time before flagging WARNING (default: 0.2)")
     arguments = parser.parse_args()
 
+    if arguments.test_mode and arguments.port != VIRTUAL_SERIAL_URL:
+        parser.error(f"--test-mode requires --port {VIRTUAL_SERIAL_URL}")
+    if arguments.test_mode and arguments.headless:
+        parser.error("--test-mode is available only with the dashboard, not --headless")
+
     if arguments.headless:
         # FirmwareLink resolves USE_REAL_COMPONENTS/VIRTUAL_SERIAL_URL itself when port is None.
         sys.exit(run_headless(arguments.port, arguments.ready, arguments.log_file, arguments.tolerance))
 
-    app = EufyDashboard(endpoint=arguments.port)
+    app = EufyDashboard(endpoint=arguments.port, test_mode=arguments.test_mode)
     app.mainloop()
 
 

@@ -124,6 +124,15 @@ python master_control.py --port rfc2217://localhost:4000
 
 Connect, then run **Home** before starting a cycle. At startup, all axes are considered unhomed.
 
+For short-travel Wokwi integration testing only, start the simulator first, then launch:
+
+```powershell
+cd scripts
+python master_control.py --port rfc2217://localhost:4000 --test-mode
+```
+
+Test mode requires that exact local Wokwi endpoint and is rejected for COM ports, other hosts, or headless runs. It scales every linear target and homing safeguard to 10%; speeds, servo angles, delays, shelf calibration files, and normal-mode motion remain unchanged. The dashboard displays **WOKWI TEST MODE | 10x SHORTER TRAVEL** while enabled.
+
 ### Headless Mode
 
 For automated verification runs (e.g. against Wokwi) without the GUI, `master_control.py --headless` connects, homes all axes, marks shelves ready, and runs cycles until no ready shelf remains. It reuses the same `CycleRunner`/`FirmwareLink`/`ShelfSettings` objects as the dashboard, so shelf readiness stays single-sourced.

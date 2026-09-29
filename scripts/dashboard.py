@@ -12,6 +12,7 @@ from controller import (
     N_SHELVES,
     SHELF_OFFSET_STEP_MM,
     USE_REAL_COMPONENTS,
+    VIRTUAL_SERIAL_URL,
     CycleRunner,
     FirmwareLink,
     ShelfSettings,
@@ -40,7 +41,7 @@ COLORS = {
 
 
 class EufyDashboard(tk.Tk):
-    def __init__(self, endpoint: Optional[str] = None) -> None:
+    def __init__(self, endpoint: Optional[str] = None, test_mode: bool = False) -> None:
         super().__init__()
         self.title("EufyRobot | Motion Instrument")
         self.geometry("1180x820")
@@ -49,7 +50,10 @@ class EufyDashboard(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.settings = ShelfSettings()
-        self.link = FirmwareLink(endpoint=endpoint)
+        self.test_mode = test_mode
+        if test_mode and endpoint != VIRTUAL_SERIAL_URL:
+            raise ValueError(f"Test mode requires --port {VIRTUAL_SERIAL_URL}.")
+        self.link = FirmwareLink(endpoint=endpoint, test_mode=test_mode)
         self.runner = CycleRunner(self.link, self.settings, on_progress=self._post_progress)
         self.robot_config = load_robot_config()
         self._worker_active = False
@@ -221,6 +225,8 @@ class EufyDashboard(tk.Tk):
     def _mode_text(self) -> str:
         if self._listen_active:
             return "LISTEN MODE"
+        if self.test_mode:
+            return "WOKWI TEST MODE | 10x SHORTER TRAVEL"
         endpoint = self.endpoint_var.get().strip().lower()
         if endpoint.startswith("rfc2217://"):
             return "VIRTUAL COMPONENTS"
@@ -646,8 +652,11 @@ def main() -> None:
     # Standalone GUI-only launch (`python dashboard.py`); master_control.py is the documented entry point.
     parser = argparse.ArgumentParser(description="EufyRobot three-axis dashboard")
     parser.add_argument("--port", help="serial URL or COM port; defaults from USE_REAL_COMPONENTS")
+    parser.add_argument("--test-mode", action="store_true", help="Wokwi-only mode with 10x shorter linear travel")
     arguments = parser.parse_args()
-    app = EufyDashboard(endpoint=arguments.port)
+    if arguments.test_mode and arguments.port != VIRTUAL_SERIAL_URL:
+        parser.error(f"--test-mode requires --port {VIRTUAL_SERIAL_URL}")
+    app = EufyDashboard(endpoint=arguments.port, test_mode=arguments.test_mode)
     app.mainloop()
 
 

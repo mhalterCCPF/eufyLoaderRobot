@@ -224,6 +224,41 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(link.homed)
         link.disconnect()
 
+    def test_test_mode_scales_linear_commands_but_not_speeds(self):
+        port = FakeSerialPort()
+        link = controller.FirmwareLink(
+            endpoint=controller.VIRTUAL_SERIAL_URL,
+            serial_factory=lambda *args, **kwargs: port,
+            test_mode=True,
+        )
+        link.connect()
+        link.homed_axes = set(controller.AXES)
+
+        link.move_to("PM", 8, 10)
+        link.approach_home("LM", 8, 10)
+        link.home_axis("RM", 5, -8)
+
+        self.assertEqual(
+            port.writes,
+            ["MOVE PM 20 250.000", "HOME_APPROACH LM 20 250.000", "HOME RM 125.000 -20"],
+        )
+        link.disconnect()
+
+    def test_test_mode_rejects_nonlocal_or_physical_endpoints(self):
+        for endpoint in ("COM3", "rfc2217://192.168.1.20:4000"):
+            with self.subTest(endpoint=endpoint):
+                with self.assertRaisesRegex(ValueError, "restricted to the local Wokwi endpoint"):
+                    controller.FirmwareLink(endpoint=endpoint, test_mode=True)
+
+        link = controller.FirmwareLink(
+            endpoint=controller.VIRTUAL_SERIAL_URL,
+            serial_factory=lambda *args, **kwargs: self.fail("serial factory must not be called"),
+            test_mode=True,
+        )
+        link.endpoint = "COM3"
+        with self.assertRaisesRegex(ValueError, "restricted to the local Wokwi endpoint"):
+            link.connect()
+
     def test_invalid_operation_state_is_rejected(self):
         link = controller.FirmwareLink(endpoint="fake")
         with self.assertRaisesRegex(ValueError, "IDLE, RUN, or HOME"):
