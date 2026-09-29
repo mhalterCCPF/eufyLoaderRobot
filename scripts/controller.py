@@ -166,6 +166,17 @@ class FirmwareLink:
                 f"Test mode is restricted to the local Wokwi endpoint {VIRTUAL_SERIAL_URL}."
             )
 
+    def set_test_mode(self, enabled: bool) -> None:
+        if self.connected or self.connection is not None:
+            raise RuntimeError("Test mode can only be changed while disconnected.")
+        previous = self.test_mode
+        self.test_mode = bool(enabled)
+        try:
+            self._validate_test_endpoint()
+        except Exception:
+            self.test_mode = previous
+            raise
+
     def _distance_to_steps(self, distance_mm: float) -> int:
         if self.test_mode:
             distance_mm *= TEST_MODE_DISTANCE_SCALE
@@ -369,6 +380,12 @@ class CycleRunner:
         self.completed_cycles += 1
         if self.completed_cycles % 10 == 0:
             self.home_cycle()
+        return shelf_position
+
+    def run_ready_cycle(self) -> int:
+        shelf_position = self.run_one()
+        if shelf_position is None:
+            raise RuntimeError("Mark at least one shelf ready before running a cycle.")
         return shelf_position
 
     def run_all(self) -> list[int]:

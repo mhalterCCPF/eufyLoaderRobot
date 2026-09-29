@@ -22,10 +22,7 @@ class RobotOrderCoordinator:
         self.wait_for_ready = wait_for_ready
 
     def run_cycle(self) -> int:
-        position = self.runner.run_one()
-        if position is None:
-            raise RuntimeError("Mark at least one shelf ready before running a cycle.")
-        return position
+        return self.runner.run_ready_cycle()
 
     def run_next_order(self) -> dict:
         prepared = self.order_client.prepare_next_order()

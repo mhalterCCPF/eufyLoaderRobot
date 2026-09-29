@@ -115,8 +115,12 @@ class EufyDashboard(tk.Tk):
         self.connect_button.grid(row=0, column=2, padx=(12, 18))
         self.listen_button = self._button(connect_bar, "LISTEN", self._toggle_listen, COLORS["accent"])
         self.listen_button.grid(row=0, column=3, padx=(0, 12))
+        self.test_mode_button = self._button(
+            connect_bar, self._test_mode_button_text(), self._toggle_test_mode, COLORS["panel_alt"]
+        )
+        self.test_mode_button.grid(row=0, column=4, padx=(0, 12))
         tk.Label(connect_bar, textvariable=self.connection_var, bg=COLORS["panel"],
-             fg=COLORS["muted"], font=("Consolas", 10), width=16).grid(row=0, column=4)
+               fg=COLORS["muted"], font=("Consolas", 10), width=16).grid(row=0, column=5)
 
         body = tk.Frame(self, bg=COLORS["background"], padx=22)
         body.grid(row=2, column=0, sticky="nsew")
@@ -234,6 +238,9 @@ class EufyDashboard(tk.Tk):
             return "REAL COMPONENTS"
         return "REAL COMPONENTS" if USE_REAL_COMPONENTS else "VIRTUAL COMPONENTS"
 
+    def _test_mode_button_text(self) -> str:
+        return "EXIT 10x TEST MODE" if self.test_mode else "ENABLE 10x TEST MODE"
+
     def _button(self, parent: tk.Widget, text: str, command: Callable, color: str) -> tk.Button:
         return tk.Button(
             parent, text=text, command=command, bg=color, fg=COLORS["text"],
@@ -271,10 +278,16 @@ class EufyDashboard(tk.Tk):
         self.cycle_var.set(str(self.runner.completed_cycles))
         self.connect_button.configure(state="disabled" if busy or self._listen_active else "normal")
         self.connect_button.configure(text="DISCONNECT" if connected else "CONNECT")
-        self.endpoint_entry.configure(state="disabled" if self._listen_active or busy else "normal")
+        self.endpoint_entry.configure(
+            state="disabled" if self._listen_active or busy or self.test_mode else "normal"
+        )
         self.listen_button.configure(
             text="EXIT LISTEN" if self._listen_active else "LISTEN",
             state="normal" if not busy or self._listen_active else "disabled",
+        )
+        self.test_mode_button.configure(
+            text=self._test_mode_button_text(),
+            state="normal" if not connected and not busy and not self._listen_active else "disabled",
         )
         can_run = connected and self.link.homed and not busy and not self._listen_active
         self.run_cycle_button.configure(state="normal" if can_run and any(self.runner.substrate_ready) else "disabled")
@@ -288,6 +301,45 @@ class EufyDashboard(tk.Tk):
         self.configure_single_button.configure(state="normal" if not busy and not self._listen_active else "disabled")
         self.settings_button.configure(state="normal" if not busy and not self._listen_active else "disabled")
         self._refresh_shelves()
+
+    def _toggle_test_mode(self) -> None:
+        if self.link.connected or self._worker_active or self._listen_active:
+            messagebox.showwarning(
+                "Test Mode",
+                "Disconnect and leave Listen mode before changing travel scale.",
+                parent=self,
+            )
+            return
+
+        enable = not self.test_mode
+        endpoint = self.endpoint_var.get().strip()
+        if enable:
+            if endpoint != VIRTUAL_SERIAL_URL:
+                messagebox.showerror(
+                    "Test Mode unavailable",
+                    f"10x Test Mode requires the exact local Wokwi endpoint:\n{VIRTUAL_SERIAL_URL}",
+                    parent=self,
+                )
+                return
+            confirmed = messagebox.askyesno(
+                "Enable Wokwi Test Mode",
+                "Enable 10x shorter linear travel for Wokwi only? Speeds and timings stay unchanged.",
+                parent=self,
+            )
+            if not confirmed:
+                return
+
+        try:
+            self.link.endpoint = endpoint
+            self.link.set_test_mode(enable)
+        except (RuntimeError, ValueError) as error:
+            messagebox.showerror("Test Mode", str(error), parent=self)
+            return
+
+        self.test_mode = enable
+        self.mode_var.set(self._mode_text())
+        self._write_log("Wokwi 10x Test Mode enabled." if enable else "Wokwi 10x Test Mode disabled.")
+        self._refresh_controls()
 
     def _toggle_ready(self, index: int) -> None:
         if self._worker_active and not self._waiting_for_shelf:
@@ -400,10 +452,7 @@ class EufyDashboard(tk.Tk):
         self._launch_worker("Running one cycle", self._run_one_cycle, require_homed=True, pauseable=True)
 
     def _run_one_cycle(self) -> int:
-        position = self.runner.run_one()
-        if position is None:
-            raise RuntimeError("Mark at least one shelf ready before running a cycle.")
-        return position
+        return self.runner.run_ready_cycle()
 
     def _order_coordinator(self) -> RobotOrderCoordinator:
         client = OrderAutomationClient(

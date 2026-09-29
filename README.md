@@ -9,6 +9,7 @@ EufyRobot coordinates three stepper axes and a retrieve-gate servo using an ESP3
 - `scripts/dashboard.py`: Tkinter instrument dashboard
 - `scripts/order_automation_client.py`: subprocess client for OrderAutomation's headless CLI
 - `scripts/order_workflow.py`: order, batch, and continuous cycle coordination
+- `scripts/conductor_client.py` and `scripts/conductor_listener.py`: authenticated Conductor Listen mode
 - `scripts/robot_config.py` and `scripts/settings_dialog.py`: robot-owned integration settings
 - `scripts/master_control.py`: dashboard launch entry point, also dispatches `--headless` mode
 - `scripts/headless.py`: connect/home/run-all without the GUI, with per-cycle timing logged to CSV
@@ -124,14 +125,16 @@ python master_control.py --port rfc2217://localhost:4000
 
 Connect, then run **Home** before starting a cycle. At startup, all axes are considered unhomed.
 
-For short-travel Wokwi integration testing only, start the simulator first, then launch:
+For short-travel Wokwi integration testing, start the simulator first and set the serial endpoint to `rfc2217://localhost:4000`. With the controller disconnected and Listen mode off, click **Enable 10x Test Mode** and confirm. The dashboard locks the serial endpoint and displays **WOKWI TEST MODE | 10x SHORTER TRAVEL**. Connect and Home only after that indicator appears. To exit, disconnect and click **Exit 10x Test Mode**. The control cannot switch scaling during a connection, worker operation, or Listen session; it rejects COM ports and nonlocal RFC2217 endpoints.
+
+The command-line equivalent is available for scripted launches:
 
 ```powershell
 cd scripts
 python master_control.py --port rfc2217://localhost:4000 --test-mode
 ```
 
-Test mode requires that exact local Wokwi endpoint and is rejected for COM ports, other hosts, or headless runs. It scales every linear target and homing safeguard to 10%; speeds, servo angles, delays, shelf calibration files, and normal-mode motion remain unchanged. The dashboard displays **WOKWI TEST MODE | 10x SHORTER TRAVEL** while enabled.
+Test mode requires that exact local Wokwi endpoint and is rejected for COM ports, other hosts, or headless runs. It scales every linear target and homing safeguard to 10%; speeds, servo angles, delays, shelf calibration files, and normal-mode motion remain unchanged. The mode is session-only and off by default. The GUI control is the recommended way to enter and exit it.
 
 ### Headless Mode
 
@@ -154,9 +157,9 @@ Each cycle's actual duration is compared against an expected duration computed f
 
 - Shelf buttons toggle each shelf between ready and not-ready.
 - **Run Cycle** runs one nearest-ready-shelf cycle without contacting OrderAutomation.
-- **Run Next** obtains or resumes one Shopify order and runs one robot cycle per line-item quantity.
-- **Run Batch** processes the requested number of Shopify orders; the count is orders, not print units.
-- **Run Continuous** processes orders until OrderAutomation reports that no orders remain.
+- **Run Next** obtains or resumes one order; a multi-item/quantity order runs one physical cycle per print unit.
+- **Run Batch** prompts for a positive order count and stops at that count, an empty queue, or an error.
+- **Run Continuous** requests orders until the Conductor reports an empty queue; errors stop the run.
 - **Settings** configures OrderAutomation's repository path, optional Python interpreter, non-secret runtime options, and output directories.
 - **Pause After Cycle** finishes the current cycle and then stops scheduling cycles.
 - **Pause Immediately** halts step pulses; axis positions become untrusted and Home is required before motion resumes.
@@ -170,15 +173,13 @@ After each tenth successfully completed cycle, all axes home before another cycl
 
 OrderAutomation remains a separate repository and desktop application. The robot uses its headless JSON CLI as a subprocess, defaults to the sibling `../OrderAutomation` checkout when available, and prefers that repository's `.venv` Python. Use Settings to select a different checkout or interpreter. The robot saves non-secret settings in its ignored root `config.json`; Shopify and GCP credentials remain only in OrderAutomation's `keys/` directory. A prepared order is persisted and resumed after interruption; each physical cycle is acknowledged separately, and cleanup is deferred until every unit completes. The `print_mailing_label` option is forwarded, but label generation is not implemented yet.
 
-## Cycle Sequence
-
-### Listen Mode
+## Listen Mode
 
 Connect and Home the robot controller before clicking **Listen**. Enter the Conductor computer's private-LAN hostname/IP, port, and shared token shown in its Conductor window. The robot saves these values and its generated loader ID in the ignored `scripts/config.json` file. Do not share the token outside the trusted LAN.
 
 While listening, motion, Home, calibration, local run, and Settings controls are disabled. Shelf readiness buttons remain active because this firmware has no shelf-presence sensors. The loader reports ready when any shelf is marked ready, busy while processing an assignment, and unavailable when no shelf is ready. Marking a shelf ready from unavailable sends a ready update immediately.
 
-Each assignment arrives as a manifest and ZIP bundle. The robot validates the manifest and files, stages each unit at the cycle's pre-print point, and acknowledges the order only after all physical cycles succeed. If a connection or cycle fails, the Conductor retains the assignment as interrupted for operator recovery; it is not automatically replayed. Clicking **Exit Listen** requests a safe boundary exit. The separate local Run Next/Batch/Continuous flow remains available outside Listen mode.
+Each assignment arrives as a manifest and ZIP bundle. The robot validates the manifest and files, stages each unit at the cycle's pre-print point, and acknowledges each completed physical cycle. On reconnect, already acknowledged units are skipped. If a connection or cycle fails before acknowledgement, the Conductor retains the assignment as interrupted for operator recovery; it is not automatically replayed. In the Conductor's **Active Assignments** tab, inspect the robot's physical state before using **Requeue Selected Interrupted Order**. Clicking **Exit Listen** requests a safe boundary exit. The separate local Run Next/Batch/Continuous flow remains available outside Listen mode.
 
 ## Cycle Sequence
 

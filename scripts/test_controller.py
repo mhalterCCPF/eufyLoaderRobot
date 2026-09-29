@@ -168,6 +168,12 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(self.runner.substrate_ready[0])
         self.assertEqual(self.runner.current_position, 1)
 
+    def test_run_ready_cycle_requires_a_ready_shelf(self):
+        with self.assertRaisesRegex(RuntimeError, "Mark at least one shelf ready"):
+            self.runner.run_ready_cycle()
+        self.runner.substrate_ready[2] = True
+        self.assertEqual(self.runner.run_ready_cycle(), 3)
+
     def test_tenth_cycle_homes_before_return(self):
         self.runner.substrate_ready[0] = True
         self.runner.completed_cycles = 9
@@ -258,6 +264,24 @@ class ControllerTests(unittest.TestCase):
         link.endpoint = "COM3"
         with self.assertRaisesRegex(ValueError, "restricted to the local Wokwi endpoint"):
             link.connect()
+
+    def test_test_mode_can_only_be_toggled_disconnected_on_local_wokwi(self):
+        link = controller.FirmwareLink(endpoint=controller.VIRTUAL_SERIAL_URL)
+        self.assertFalse(link.test_mode)
+        link.set_test_mode(True)
+        self.assertTrue(link.test_mode)
+        link.set_test_mode(False)
+        self.assertFalse(link.test_mode)
+
+        link.connected = True
+        with self.assertRaisesRegex(RuntimeError, "only be changed while disconnected"):
+            link.set_test_mode(True)
+        link.connected = False
+
+        link.endpoint = "COM3"
+        with self.assertRaisesRegex(ValueError, "restricted to the local Wokwi endpoint"):
+            link.set_test_mode(True)
+        self.assertFalse(link.test_mode)
 
     def test_invalid_operation_state_is_rejected(self):
         link = controller.FirmwareLink(endpoint="fake")
