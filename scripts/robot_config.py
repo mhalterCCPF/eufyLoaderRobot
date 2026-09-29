@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 SIBLING_ORDER_AUTOMATION = Path(__file__).resolve().parents[1].parent / "OrderAutomation"
 
 DEFAULT_CONFIG = {
+    "conductor_host": "",
+    "conductor_port": 8765,
+    "conductor_token": "",
+    "loader_id": "",
     "orderautomation_path": str(SIBLING_ORDER_AUTOMATION) if SIBLING_ORDER_AUTOMATION.is_dir() else "",
     "orderautomation_python": "",
     "packing_slip": True,
@@ -45,3 +50,12 @@ def load_robot_config(path: Path = CONFIG_PATH) -> dict:
 def save_robot_config(config: dict, path: Path = CONFIG_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+
+def ensure_loader_id(config: dict) -> str:
+    loader_id = str(config.get("loader_id", "")).strip()
+    if not loader_id:
+        loader_id = str(uuid.uuid4())
+        config["loader_id"] = loader_id
+        save_robot_config(config)
+    return loader_id

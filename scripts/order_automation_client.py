@@ -7,10 +7,19 @@ import subprocess
 import sys
 from pathlib import Path
 
-from robot_config import DEFAULT_CONFIG
-
 PROTOCOL_VERSION = 1
-CONFIG_KEYS = set(DEFAULT_CONFIG) - {"orderautomation_path", "orderautomation_python"}
+CONFIG_KEYS = {
+    "packing_slip",
+    "add_packing_slip_to_order",
+    "print_mailing_label",
+    "queue_multi_print_orders",
+    "cleanup",
+    "eufymake_dir",
+    "downloaded_assets_dir",
+    "packing_slip_dir",
+    "gcs_bucket_name",
+    "company",
+}
 
 
 class OrderAutomationClient:

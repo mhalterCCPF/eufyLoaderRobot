@@ -163,6 +163,16 @@ OrderAutomation remains a separate repository and desktop application. The robot
 
 ## Cycle Sequence
 
+### Listen Mode
+
+Connect and Home the robot controller before clicking **Listen**. Enter the Conductor computer's private-LAN hostname/IP, port, and shared token shown in its Conductor window. The robot saves these values and its generated loader ID in the ignored `scripts/config.json` file. Do not share the token outside the trusted LAN.
+
+While listening, motion, Home, calibration, local run, and Settings controls are disabled. Shelf readiness buttons remain active because this firmware has no shelf-presence sensors. The loader reports ready when any shelf is marked ready, busy while processing an assignment, and unavailable when no shelf is ready. Marking a shelf ready from unavailable sends a ready update immediately.
+
+Each assignment arrives as a manifest and ZIP bundle. The robot validates the manifest and files, stages each unit at the cycle's pre-print point, and acknowledges the order only after all physical cycles succeed. If a connection or cycle fails, the Conductor retains the assignment as interrupted for operator recovery; it is not automatically replayed. Clicking **Exit Listen** requests a safe boundary exit. The separate local Run Next/Batch/Continuous flow remains available outside Listen mode.
+
+## Cycle Sequence
+
 For selected shelf X:
 
 1. LM to `LMP[X] + O1` at LS1.

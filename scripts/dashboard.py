@@ -16,9 +16,11 @@ from controller import (
     FirmwareLink,
     ShelfSettings,
 )
+from conductor_client import ConductorClient
+from conductor_listener import RobotConductorListener
 from order_automation_client import OrderAutomationClient
 from order_workflow import RobotOrderCoordinator
-from robot_config import load_robot_config
+from robot_config import ensure_loader_id, load_robot_config, save_robot_config
 from settings_dialog import SettingsDialog
 
 
@@ -51,6 +53,10 @@ class EufyDashboard(tk.Tk):
         self.runner = CycleRunner(self.link, self.settings, on_progress=self._post_progress)
         self.robot_config = load_robot_config()
         self._worker_active = False
+        self._listen_active = False
+        self._listen_stop_event = threading.Event()
+        self._readiness_event = threading.Event()
+        self._listen_thread: Optional[threading.Thread] = None
         self._pauseable_operation = False
         self._waiting_for_shelf = False
         self._shelf_wait_event = threading.Event()
@@ -95,16 +101,18 @@ class EufyDashboard(tk.Tk):
         connect_bar.grid_columnconfigure(1, weight=1)
         tk.Label(connect_bar, text="SERIAL ENDPOINT", bg=COLORS["panel"], fg=COLORS["muted"],
                  font=("Bahnschrift", 9)).grid(row=0, column=0, sticky="w", padx=(0, 12))
-        endpoint_entry = tk.Entry(
+        self.endpoint_entry = tk.Entry(
             connect_bar, textvariable=self.endpoint_var, bg=COLORS["background"],
             fg=COLORS["text"], insertbackground=COLORS["text"], relief="flat",
             font=("Consolas", 11),
         )
-        endpoint_entry.grid(row=0, column=1, sticky="ew", ipady=7)
+        self.endpoint_entry.grid(row=0, column=1, sticky="ew", ipady=7)
         self.connect_button = self._button(connect_bar, "CONNECT", self._connect, COLORS["blue"])
         self.connect_button.grid(row=0, column=2, padx=(12, 18))
+        self.listen_button = self._button(connect_bar, "LISTEN", self._toggle_listen, COLORS["accent"])
+        self.listen_button.grid(row=0, column=3, padx=(0, 12))
         tk.Label(connect_bar, textvariable=self.connection_var, bg=COLORS["panel"],
-                 fg=COLORS["muted"], font=("Consolas", 10), width=16).grid(row=0, column=3)
+             fg=COLORS["muted"], font=("Consolas", 10), width=16).grid(row=0, column=4)
 
         body = tk.Frame(self, bg=COLORS["background"], padx=22)
         body.grid(row=2, column=0, sticky="nsew")
@@ -211,6 +219,8 @@ class EufyDashboard(tk.Tk):
         return panel
 
     def _mode_text(self) -> str:
+        if self._listen_active:
+            return "LISTEN MODE"
         endpoint = self.endpoint_var.get().strip().lower()
         if endpoint.startswith("rfc2217://"):
             return "VIRTUAL COMPONENTS"
@@ -253,19 +263,24 @@ class EufyDashboard(tk.Tk):
         self.homed_var.set("HOMED" if self.link.homed else "HOME REQUIRED")
         self.position_var.set(f"{self.runner.current_position:02d}")
         self.cycle_var.set(str(self.runner.completed_cycles))
-        self.connect_button.configure(state="disabled" if busy else "normal")
+        self.connect_button.configure(state="disabled" if busy or self._listen_active else "normal")
         self.connect_button.configure(text="DISCONNECT" if connected else "CONNECT")
-        can_run = connected and self.link.homed and not busy
+        self.endpoint_entry.configure(state="disabled" if self._listen_active or busy else "normal")
+        self.listen_button.configure(
+            text="EXIT LISTEN" if self._listen_active else "LISTEN",
+            state="normal" if not busy or self._listen_active else "disabled",
+        )
+        can_run = connected and self.link.homed and not busy and not self._listen_active
         self.run_cycle_button.configure(state="normal" if can_run and any(self.runner.substrate_ready) else "disabled")
         self.run_next_button.configure(state="normal" if can_run else "disabled")
         self.run_batch_button.configure(state="normal" if can_run else "disabled")
         self.run_continuous_button.configure(state="normal" if can_run else "disabled")
-        self.pause_button.configure(state="normal" if busy and self._pauseable_operation else "disabled")
-        self.stop_button.configure(state="normal" if connected else "disabled")
-        self.home_button.configure(state="normal" if connected and not busy else "disabled")
-        self.configure_all_button.configure(state="normal" if not busy else "disabled")
-        self.configure_single_button.configure(state="normal" if not busy else "disabled")
-        self.settings_button.configure(state="normal" if not busy else "disabled")
+        self.pause_button.configure(state="normal" if busy and self._pauseable_operation and not self._listen_active else "disabled")
+        self.stop_button.configure(state="normal" if connected and not self._listen_active else "disabled")
+        self.home_button.configure(state="normal" if connected and not busy and not self._listen_active else "disabled")
+        self.configure_all_button.configure(state="normal" if not busy and not self._listen_active else "disabled")
+        self.configure_single_button.configure(state="normal" if not busy and not self._listen_active else "disabled")
+        self.settings_button.configure(state="normal" if not busy and not self._listen_active else "disabled")
         self._refresh_shelves()
 
     def _toggle_ready(self, index: int) -> None:
@@ -273,6 +288,94 @@ class EufyDashboard(tk.Tk):
             return
         self.runner.substrate_ready[index] = not self.runner.substrate_ready[index]
         self._shelf_wait_event.set()
+        self._readiness_event.set()
+        self._refresh_controls()
+
+    def _toggle_listen(self) -> None:
+        if self._listen_active:
+            self._listen_stop_event.set()
+            self._readiness_event.set()
+            self.listen_button.configure(text="STOPPING", state="disabled")
+            self.operation_var.set("Finishing the active cycle before leaving Listen mode")
+            return
+        if not self.link.connected or not self.link.homed:
+            messagebox.showwarning(
+                "Motion unavailable",
+                "Connect to the robot controller and Home all axes before entering Listen mode.",
+                parent=self,
+            )
+            return
+        self._start_listen()
+
+    def _start_listen(self) -> None:
+        host = simpledialog.askstring(
+            "Conductor Connection", "Conductor hostname or IP:",
+            initialvalue=self.robot_config.get("conductor_host", ""), parent=self,
+        )
+        if not host or not host.strip():
+            return
+        port_text = simpledialog.askstring(
+            "Conductor Connection", "Conductor port:",
+            initialvalue=str(self.robot_config.get("conductor_port", 8765)), parent=self,
+        )
+        if not port_text:
+            return
+        token = simpledialog.askstring(
+            "Conductor Authentication", "Shared Conductor token:",
+            initialvalue=self.robot_config.get("conductor_token", ""), show="*", parent=self,
+        )
+        if not token:
+            return
+        try:
+            port = int(port_text)
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Conductor Connection", "Port must be from 1 to 65535.", parent=self)
+            return
+
+        self.robot_config.update({
+            "conductor_host": host.strip(),
+            "conductor_port": port,
+            "conductor_token": token,
+        })
+        loader_id = ensure_loader_id(self.robot_config)
+        save_robot_config(self.robot_config)
+        client = ConductorClient(host.strip(), port, token)
+        listener = RobotConductorListener(
+            self.runner,
+            client,
+            loader_id,
+            self.robot_config["eufymake_dir"],
+            self._listen_stop_event,
+            self._readiness_event,
+            on_progress=self._post_progress,
+        )
+        self._listen_stop_event.clear()
+        self._readiness_event.set()
+        self._listen_active = True
+        self.mode_var.set(self._mode_text())
+        self._refresh_controls()
+        self._write_log(f"Connecting to Conductor at {host.strip()}:{port} as {loader_id}.")
+
+        def worker() -> None:
+            error = None
+            try:
+                listener.run()
+            except Exception as exc:
+                error = str(exc)
+            if not self._closing:
+                self.after(0, lambda message=error: self._listen_finished(message))
+
+        self._listen_thread = threading.Thread(target=worker, name="conductor-listener", daemon=True)
+        self._listen_thread.start()
+
+    def _listen_finished(self, error: Optional[str]) -> None:
+        self._listen_active = False
+        self._listen_thread = None
+        self.mode_var.set(self._mode_text())
+        self.operation_var.set("Standby" if error is None else "Listen failed")
+        self._write_log("Listen mode ended." if error is None else f"Listen mode failed: {error}")
         self._refresh_controls()
 
     def _connect(self) -> None:
@@ -378,7 +481,7 @@ class EufyDashboard(tk.Tk):
 
     def _launch_worker(self, label: str, operation: Callable, require_homed: bool = False,
                        require_connected: bool = True, pauseable: bool = False) -> None:
-        if self._worker_active:
+        if self._worker_active or self._listen_active:
             return
         if require_connected and not self.link.connected:
             messagebox.showwarning("Motion unavailable", "Connect to the controller first.", parent=self)
@@ -526,6 +629,8 @@ class EufyDashboard(tk.Tk):
 
     def _on_close(self) -> None:
         self._closing = True
+        self._listen_stop_event.set()
+        self._readiness_event.set()
         self._shelf_wait_event.set()
         if self._worker_active and self.link.connected:
             self.runner.immediate_stop_requested.set()
